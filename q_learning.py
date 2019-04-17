@@ -12,20 +12,21 @@ from fast_dictionary import FastDictionary
 from replay_buffer import ReplayBuffer
 from libs.atari_wrappers import make_atari, wrap_deepmind
 
-FRAME_STACK = 4
-
 def _build(net,x):
     for block in net: x = block(x)
     return x
 
 class NEC(object):
+    clip_grad_norm = 10.0
+    lr = 1e-4
+
     def __init__(self,
                  num_ac,
                  memory_max_len,
                  K,
                  embed_len,
-                 delta=1e-3,
-                 q_lr=1e-2,
+                 delta=1e-5,
+                 q_lr=0.01,
                  ):
         self.delta = delta
         self.q_lr = q_lr
@@ -35,10 +36,11 @@ class NEC(object):
         self.Qa = [FastDictionary(memory_max_len) for _ in range(num_ac)]
 
         # Experience reaclled from a replay buffer through FastDictionary
-        self.s = tf.placeholder(tf.float32,[None,84,84,FRAME_STACK]) #[B,seq_len,state_dims]
+        self.s = tf.placeholder(tf.float32,[None,84,84,4]) #[B,seq_len,state_dims]
 
         self.nn_es = tf.placeholder(tf.float32,[None,None,embed_len]) #[B,K,embed_len]
         self.nn_qs = tf.placeholder(tf.float32,[None,None])
+        self.nn_len = tf.placeholder(tf.int32,[None])
         self.target_q = tf.placeholder(tf.float32,[None])
 
         with tf.variable_scope('weights') as param_scope:
@@ -58,26 +60,24 @@ class NEC(object):
 
         self.embed = _build(self.net,self.s)
 
-        dists = tf.reduce_sum((self.nn_es - self.embed[:,None])**2,axis=2)
-        kernel = 1 / (dists + self.delta)
+        dists = tf.reduce_sum((self.nn_es - self.embed[:,None])**2,axis=2) +self.delta #[B,K]
+        mask = tf.sequence_mask(self.nn_len,maxlen=self.K,dtype=tf.float32) #[B,K]
+        kernel = mask * (1. / dists) #[B,K]
 
-        #kernel = tf.Print(kernel,[tf.shape(self.nn_es),tf.shape(dists),tf.shape(kernel)])
+        self.q = tf.reduce_sum(kernel * self.nn_qs, axis=1) / tf.reduce_sum(kernel,axis=1)
 
-        q = tf.reduce_sum(kernel * self.nn_qs, axis=1) / tf.reduce_sum(kernel, axis=1, keep_dims=True)
-        self.loss = tf.reduce_mean((self.target_q - q)**2)
-        tf.summary.scalar('loss',self.loss,collections=['summaries'])
-
+        self.loss = tf.reduce_mean((self.target_q - self.q)**2)
 
         # Optimize op
         #self.optim = tf.train.AdamOptimizer(1e-4)
-        self.optim = tf.train.RMSPropOptimizer(1e-4)
+        self.optim = tf.train.RMSPropOptimizer(self.lr)
         self.update_op = self.optim.minimize(self.loss,var_list=self.parameters(train=True))
 
         self.nn_es_gradient, self.nn_qs_gradient = tf.gradients(self.loss, [self.nn_es,self.nn_qs])
-        self.new_nn_es = self.nn_es - self.q_lr * self.nn_es_gradient
-        self.new_nn_qs = self.nn_qs - self.q_lr * self.nn_qs_gradient
 
-        self.summaries = tf.summary.merge_all(key='summaries')
+        self.new_nn_es = self.nn_es - self.lr * tf.clip_by_norm(self.nn_es_gradient,self.clip_grad_norm,axes=[2])
+        self.new_nn_qs = self.nn_qs - self.q_lr * tf.clip_by_value(self.nn_qs_gradient,-self.clip_grad_norm,self.clip_grad_norm)
+
         self.saver = tf.train.Saver(var_list=self.parameters(train=True),max_to_keep=0)
 
     def parameters(self,train=False):
@@ -119,7 +119,7 @@ class NEC(object):
     def _read_table(self,e,Q,K):
         oids, nn_es, nn_qs = Q.query_knn(e,K=K)
 
-        dists = np.linalg.norm(nn_es - e,axis=1)**2
+        dists = np.sum((nn_es - e)**2,axis=1)
         kernel = 1 / (dists + self.delta)
 
         q = np.sum(kernel * nn_qs) / np.sum(kernel)
@@ -146,14 +146,22 @@ class NEC(object):
 
         b_nn_es = np.zeros((len(b_s),self.K,self.embed_len),np.float32)
         b_nn_qs = np.zeros((len(b_s),self.K),np.float32)
+        b_nn_len = np.zeros((len(b_s),),np.int32)
 
-        for i,Q in enumerate(self.Qa):
-            idxes = np.where(b_a==i)
+        # for debugging
+        #_new_b_nn_es = np.zeros((len(b_s),self.K,self.embed_len),np.float32)
+        #_new_b_nn_qs = np.zeros((len(b_s),self.K),np.float32)
 
-            Oids, nn_Es, nn_Qs = Q.query_knn(b_e[idxes],K=self.K)
+        for a,Q in enumerate(self.Qa):
+            idxes = np.where(b_a==a)
+            if len(idxes[0]) == 0:
+                continue
+
+            Oids, nn_Es, nn_Qs, nn_Len = Q.query_knn(b_e[idxes],K=self.K)
 
             b_nn_es[idxes] = nn_Es
             b_nn_qs[idxes] = nn_Qs
+            b_nn_len[idxes] = nn_Len
 
             # Update the table (embedding & q itself)
             new_Es, new_Qs = \
@@ -161,27 +169,48 @@ class NEC(object):
                     self.s:b_s[idxes],
                     self.nn_es:nn_Es,
                     self.nn_qs:nn_Qs,
+                    self.nn_len:nn_Len,
                     self.target_q:b_q[idxes],
                 })
 
-            oids = np.reshape(Oids,[-1])
-            nn_es = np.reshape(nn_Es,[-1,self.embed_len])
-            nn_qs = np.reshape(nn_Qs,[-1])
+            #_new_b_nn_es[idxes] = new_Es
+            #_new_b_nn_qs[idxes] = new_Qs
+
+            total_len = np.sum(nn_Len)
+
+            oids = np.zeros((total_len,),np.uint32)
+            new_nn_es = np.zeros((total_len,self.embed_len),np.float32)
+            new_nn_qs = np.zeros((total_len,),np.float32)
+
+            i = 0
+            for b,l in enumerate(nn_Len):
+                oids[i:i+l] = Oids[b,:l]
+                new_nn_es[i:i+l] = nn_Es[b,:l]
+                new_nn_qs[i:i+l] = nn_Qs[b,:l]
+                i += l
 
             _, unique_idxes = np.unique(oids,return_index=True)
             Q.update(oids[unique_idxes],
-                     nn_es[unique_idxes],
-                     list(zip(nn_es[unique_idxes],nn_qs[unique_idxes])))
+                     new_nn_es[unique_idxes],
+                     list(zip(new_nn_es[unique_idxes],new_nn_qs[unique_idxes])))
 
         # Update the embedding network
-        loss, _, summary_str = sess.run([self.loss,self.update_op,self.summaries],feed_dict={
+        #before_q, loss, _ = sess.run([self.q,self.loss,self.update_op],feed_dict={
+        before_q, loss = sess.run([self.q,self.loss],feed_dict={
             self.s:b_s,
             self.nn_es:b_nn_es,
             self.nn_qs:b_nn_qs,
+            self.nn_len:b_nn_len,
             self.target_q:b_q,
         })
 
-        return loss, summary_str
+        #new_q = sess.run(self.q,feed_dict={
+        #    self.s:b_s,
+        #    self.nn_es:_new_b_nn_es,
+        #    self.nn_qs:_new_b_nn_qs,
+        #})
+
+        return loss
 
 
 def train(
@@ -220,7 +249,7 @@ def train(
                         episode_life=False,
                         clip_rewards=False,
                         frame_stack=True,
-                        scale=True)
+                        scale=False)
     num_ac = env.action_space.n
 
     # ReplayBuffer
@@ -233,13 +262,17 @@ def train(
     sess.run(tf.global_variables_initializer())
 
     summary_writer = tf.summary.FileWriter(os.path.join(log_dir,'tensorboard'))
+    def _write_scalar(it,it_type,tag,value):
+        summary = tf.Summary(value=[tf.Summary.Value(tag=f"{tag}/{it_type}", simple_value=value)])
+        summary_writer.add_summary(summary,global_step=it)
 
     ####### Setup Done
 
     num_frames = 0 # #frames observed
+    num_updates = 0
 
     # Fill up the memory and replay buffer with a random policy
-    for _ in range(init_eps):
+    for ep in range(init_eps):
         ob = env.reset()
 
         obs,acs,rewards = [ob],[],[]
@@ -292,8 +325,16 @@ def train(
                 # Train on random minibatch from replacy buffer
                 if num_frames % update_period == 0:
                     b_s,b_a,b_R = replay_buffer.sample(batch_size)
-                    loss, summary = nec.update(b_s,b_a,b_R)
-                    print(f'[{num_frames}] loss: {loss}')
+                    loss = nec.update(b_s,b_a,b_R)
+
+                    num_updates += 1
+
+                    if num_updates % 100 == 0:
+                        print(f'[{num_frames}/{num_updates}] loss: {loss}')
+
+                    _write_scalar(it=num_frames,it_type='per_frames',tag='loss',value=loss)
+                    _write_scalar(it=num_updates,it_type='per_updates',tag='loss',value=loss)
+                    _write_scalar(it=num_frames,it_type='per_frames',tag='num_updates',value=num_updates)
 
                 if t >= N:
                     # N-Step Bootstrapping
@@ -309,7 +350,13 @@ def train(
                 if done:
                     break
 
-            print(f'Episode {ep} -- Ep Len: {len(obs)} Acc Reward: {np.sum(rewards)}')
+            print(f'Episode {ep} -- Ep Len: {len(obs)} Acc Reward: {np.sum(rewards)} current epsilon: {epsilon}')
+            _write_scalar(tag='ep',value=ep,it=num_frames,it_type='per_frames')
+            _write_scalar(tag='ep_len',value=len(obs),it=num_frames,it_type='per_frames')
+            _write_scalar(tag='ep_len',value=len(obs),it=ep,it_type='per_episode')
+            _write_scalar(tag='eps_reward',value=np.sum(rewards),it=num_frames,it_type='per_frames')
+            _write_scalar(tag='eps_reward',value=np.sum(rewards),it=ep,it_type='per_episode')
+            _write_scalar(tag='epsilon',value=epsilon,it=ep,it_type='per_episode')
 
             # Remaining items which is not bootstrappable; partial trajectory close to end of episode
             # Append to memory & replay buffer

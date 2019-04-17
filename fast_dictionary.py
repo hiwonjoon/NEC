@@ -52,12 +52,13 @@ class FastDictionary(object):
     def add(self,E,Contents):
         assert not np.isnan(E).any(), ('NaN Detected in Add',np.argwhere(np.isnan(E)))
         assert len(E) == len(Contents)
+        assert E.ndim == 2 and E.shape[1] == 64, E.shape
 
         if self.counter == 0:
             self.flann.build_index(E)
         else:
             self.flann.add_points(E)
-        Oid, self.counter = np.arange(self.counter,self.counter+len(E)), self.counter + len(E)
+        Oid, self.counter = np.arange(self.counter,self.counter+len(E),dtype=np.uint32), self.counter + len(E)
 
         for oid,content in zip(Oid,Contents):
             self.contents_lookup[oid] = content
@@ -69,7 +70,9 @@ class FastDictionary(object):
 
                 old_oid = self.p_queue.popleft()
 
-                self.flann.remove_point(old_oid)
+                ret = self.flann.remove_point(old_oid)
+                if ret <= 0:
+                    raise Exception(f'remove point error {ret}')
                 del self.contents_lookup[old_oid]
 
     def query_knn(self,E,K=100):
@@ -80,21 +83,35 @@ class FastDictionary(object):
             E = E[None]
             flatten = True
 
-        Oids, _ = self.flann.nn_index(E,num_neighbors=K)
+        Oids, Dists, C = self.flann.nn_index(E,num_neighbors=K)
+        Dists = np.nan_to_num(Dists,copy=False)
+        # TODO: Hmm. Dists sometimes becomes NaN
+
+        if C != len(E)*K:
+            print(f'Not enough neighbors ({np.count_nonzero(Dists>=0.)} == {C}) != {len(E)}*{K}, rebuild and try again...')
+            self.flann.rebuild_index()
+            Oids, Dists, C = self.flann.nn_index(E,num_neighbors=K)
+            Dists = np.nan_to_num(Dists,copy=False)
+            # TODO: Hmm. Dists sometimes becomes NaN
+
         NN_E = np.zeros((len(E),K,E.shape[1]),np.float32)
         NN_Q = np.zeros((len(E),K),np.float32)
+        Len = np.count_nonzero(Dists>=0.,axis=1)
+
+        assert np.sum(Len) == C, f'{np.sum(Len)} != {C}'
 
         for b,oids in enumerate(Oids):
-            for k,oid in enumerate(oids):
+            for k,oid in enumerate(oids[:Len[b]]): #drop if not enough NN retrieved.
                 e,q = self.contents_lookup[oid]
 
                 NN_E[b,k] = e
                 NN_Q[b,k] = q
 
         if flatten:
-            return Oids, NN_E[0], NN_Q[0]
+            return Oids[0][:Len[0]], NN_E[0][:Len[0]], NN_Q[0][:Len[0]]
         else:
-            return Oids, NN_E, NN_Q
+            return Oids, NN_E, NN_Q, Len
+
 
     def update(self,Oid,E,Contents):
         """
@@ -103,17 +120,20 @@ class FastDictionary(object):
         """
         assert not np.isnan(E).any(), ('NaN Detected in Updating',np.argwhere(np.isnan(E)))
         assert len(np.unique(Oid)) == len(Oid)
+        assert E.ndim == 2 and E.shape[1] == 64, E.shape
 
         # add new Embeddings
         self.flann.add_points(E)
-        NewOid, self.counter = np.arange(self.counter,self.counter+len(E)), self.counter + len(E)
+        NewOid, self.counter = np.arange(self.counter,self.counter+len(E),dtype=np.uint32), self.counter + len(E)
 
         for oid,new_oid,content in zip(Oid,NewOid,Contents):
             self.contents_lookup[new_oid] = content
             self.p_queue.append(new_oid)
 
             # delete from kd-tree
-            self.flann.remove_point(oid)
+            ret = self.flann.remove_point(oid)
+            if ret <= 0:
+                raise Exception(f'remove point error {ret}')
             # delete from contents_lookup
             del self.contents_lookup[oid]
             # I cannot remove from p_queue, but it will be handeled in add op.
