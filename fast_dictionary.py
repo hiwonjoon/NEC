@@ -7,8 +7,17 @@ from pyflann import FLANN
 #import ngtpy
 
 class FastDictionary(object):
-    def __init__(self,maxlen):
-        self.flann = FLANN()
+    def __init__(self,
+                 maxlen,
+                 seed=0,
+                 cores=4,
+                 trees=1):
+        self.flann = FLANN(
+            algorithm='kdtree',
+            random_seed=seed,
+            cores=cores,
+            trees=trees,
+        )
 
         self.counter = 0
 

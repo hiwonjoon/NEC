@@ -18,22 +18,23 @@ def _build(net,x):
 
 class NEC(object):
     clip_grad_norm = 10.0
-    lr = 1e-4
 
     def __init__(self,
                  num_ac,
-                 memory_max_len,
                  K,
                  embed_len,
-                 delta=1e-5,
-                 q_lr=0.01,
+                 delta,
+                 lr,
+                 q_lr,
+                 dnd_params,
                  ):
         self.delta = delta
+        self.lr = lr
         self.q_lr = q_lr
         self.K = K
         self.embed_len = embed_len
 
-        self.Qa = [FastDictionary(memory_max_len) for _ in range(num_ac)]
+        self.Qa = [FastDictionary(**dnd_params) for _ in range(num_ac)]
 
         # Experience reaclled from a replay buffer through FastDictionary
         self.s = tf.placeholder(tf.float32,[None,84,84,4]) #[B,seq_len,state_dims]
@@ -220,6 +221,8 @@ def train(
     env_id,
     replay_buffer_len,
     memory_len,
+    cores,
+    trees,
     p,             # #nn items; reported number is 50
     embed_size,    # embedding vector length; reported number is ?
     gamma,         # discount value; reported number is 0.99
@@ -227,6 +230,9 @@ def train(
     update_period, # the reported number is 16
     batch_size,    # the reported number is 32
     init_eps,
+    delta,
+    lr,
+    q_lr,
     **kwargs
 ):
     # another hyper params
@@ -256,7 +262,12 @@ def train(
     replay_buffer = ReplayBuffer(replay_buffer_len)
 
     # Neural Episodic Controller
-    nec = NEC(num_ac,memory_len,p,embed_size)
+    nec = NEC(num_ac,p,embed_size,delta,lr,q_lr,dnd_params={
+        'maxlen': memory_len,
+        'seed': seed,
+        'cores':cores, # #cores for KD-Tree
+        'trees':trees, # #trees for KD-Tree
+    })
 
     sess = tf.InteractiveSession()
     sess.run(tf.global_variables_initializer())
@@ -385,11 +396,17 @@ if __name__ == "__main__":
     parser.add_argument('--memory_len',type=int,default=int(5*1e5))
     parser.add_argument('--replay_buffer_len',type=int,default=int(1e5))
     parser.add_argument('--p',type=int,default=50)
+    parser.add_argument('--delta',type=float,default=1e-5)
     # Training
     parser.add_argument('--init_eps',type=int,default=10,help='# episodes with random policy for initialize memory and replay buffer')
     parser.add_argument('--N',type=int,default=100,help='N-step-bootstrapping')
     parser.add_argument('--update_period',type=int,default=16)
     parser.add_argument('--batch_size',type=int,default=32)
+    parser.add_argument('--cores',type=int,default=4)
+    parser.add_argument('--trees',type=int,default=1)
+    parser.add_argument('--lr',type=float,default=1e-4,help='learning rate for embdedding network and embedding in the table')
+    parser.add_argument('--q_lr',type=float,default=0.01,help='learning rate for Q value in the table')
+
 
     args = parser.parse_args()
     if args.mode == 'train':
