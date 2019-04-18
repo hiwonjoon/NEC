@@ -228,19 +228,21 @@ def train(
     embed_size,    # embedding vector length; reported number is ?
     gamma,         # discount value; reported number is 0.99
     N,             # N-step bootstrapping; reported number is 100
-    update_period, # the reported number is 16
+    update_period, # the reported number is 16//4 = 4
     batch_size,    # the reported number is 32
     init_eps,
     delta,
     lr,
     q_lr,
+    epsilon,
+    min_epsilon,
+    epsilon_decay, #exponential decaying factor
+    eval_period,
+    save_period,
     **kwargs
 ):
     # another hyper params
     _gw = np.array([gamma**i for i in range(N)])
-    epsilon = 1.0
-    min_epsilon = 0.01
-    epsilon_decay = 0.99 #explonential decaying factor
 
     # expr setting
     Path(log_dir).mkdir(parents=True,exist_ok='temp' in log_dir)
@@ -280,7 +282,7 @@ def train(
 
     ####### Setup Done
 
-    num_frames = 0 # #frames observed
+    num_steps = 0
     num_updates = 0
 
     # Fill up the memory and replay buffer with a random policy
@@ -297,7 +299,7 @@ def train(
             acs.append(ac)
             rewards.append(r)
 
-            num_frames += 1
+            num_steps += 1
 
             if done:
                 break
@@ -313,8 +315,9 @@ def train(
             replay_buffer.append(ob,a,R)
 
     # Training!
+    next_save_steps = save_period
     try:
-        for ep in itertools.count():
+        for ep in itertools.count(start=init_eps):
             ob = env.reset()
 
             obs,acs,rewards,es,Vs = [ob],[],[],[],[]
@@ -332,21 +335,21 @@ def train(
                 es.append(e)
                 Vs.append(V)
 
-                num_frames += 1
+                num_steps += 1
 
                 # Train on random minibatch from replacy buffer
-                if num_frames % update_period == 0:
+                if num_steps % update_period == 0:
                     b_s,b_a,b_R = replay_buffer.sample(batch_size)
                     loss = nec.update(b_s,b_a,b_R)
 
                     num_updates += 1
 
                     if num_updates % 100 == 0:
-                        print(f'[{num_frames}/{num_updates}] loss: {loss}')
+                        print(f'[{num_steps*4}/{num_updates}] loss: {loss}')
 
-                    _write_scalar(it=num_frames,it_type='per_frames',tag='loss',value=loss)
+                    _write_scalar(it=num_steps*4,it_type='per_frames',tag='loss',value=loss)
                     _write_scalar(it=num_updates,it_type='per_updates',tag='loss',value=loss)
-                    _write_scalar(it=num_frames,it_type='per_frames',tag='num_updates',value=num_updates)
+                    _write_scalar(it=num_steps*4,it_type='per_frames',tag='num_updates',value=num_updates)
 
                 if t >= N:
                     # N-Step Bootstrapping
@@ -363,10 +366,10 @@ def train(
                     break
 
             print(f'Episode {ep} -- Ep Len: {len(obs)} Acc Reward: {np.sum(rewards)} current epsilon: {epsilon}')
-            _write_scalar(tag='ep',value=ep,it=num_frames,it_type='per_frames')
-            _write_scalar(tag='ep_len',value=len(obs),it=num_frames,it_type='per_frames')
+            _write_scalar(tag='ep',value=ep,it=num_steps*4,it_type='per_frames')
+            _write_scalar(tag='ep_len',value=len(obs),it=num_steps*4,it_type='per_frames')
             _write_scalar(tag='ep_len',value=len(obs),it=ep,it_type='per_episode')
-            _write_scalar(tag='eps_reward',value=np.sum(rewards),it=num_frames,it_type='per_frames')
+            _write_scalar(tag='eps_reward',value=np.sum(rewards),it=num_steps*4,it_type='per_frames')
             _write_scalar(tag='eps_reward',value=np.sum(rewards),it=ep,it_type='per_episode')
             _write_scalar(tag='epsilon',value=epsilon,it=ep,it_type='per_episode')
 
@@ -380,8 +383,52 @@ def train(
             # epsilon decay
             epsilon = max(min_epsilon, epsilon * epsilon_decay)
 
+            # Save Model & Evaluatate
+            if ep % eval_period == 0:
+                try:
+                    ep_len, eps_reward = _run(env,nec,os.path.join(log_dir,f'test-{ep}.mp4'),maxlen=len(obs)*3)
+
+                    print(f'Evaluation -- Episode {ep} -- Ep Len: {ep_len} Acc Reward: {eps_reward}')
+                    _write_scalar(tag='ep_len',value=ep_len,it=ep,it_type='per_episode_eval')
+                    _write_scalar(tag='eps_reward',value=eps_reward,it=ep,it_type='per_episode_eval')
+                except RuntimeError as e:
+                    print(e)
+                    print('Evaluation -- Skipped')
+
+            if num_steps >= next_save_steps:
+                nec.save(log_dir,it=next_save_steps*4) # iteration number -- num frames
+                next_save_steps += save_period
+
     except KeyboardInterrupt:
+        print('saving... please wait...')
         nec.save(log_dir)
+        print('done!')
+
+def _run(env,nec,video_f=None,maxlen=-1):
+    obs, rs, done = [env.reset()], [], False
+    for i in itertools.count():
+        ac,_ = nec.policy(obs[-1])
+        ob, r, done, _ = env.step(ac)
+
+        obs.append(ob)
+        rs.append(r)
+
+        if done or (maxlen != -1 and i > maxlen):
+            break
+
+    if not done:
+        raise RuntimeError(f'the policy seems stuck; most likely not hit the darn start button!')
+
+    if video_f is not None:
+        frames = np.stack([np.array(ob)[:,:,0] for ob in obs],axis=0)
+        frames = [(f * 255.).astype(np.uint8) for f in frames] # convert to uint8
+        frames = [np.tile(f[:,:,None], (1, 1, 3)) for f in frames] # convert to 3-channel image
+
+        import moviepy.editor as mpy
+        clip = mpy.ImageSequenceClip(frames,fps=30)
+        clip.write_videofile(video_f, verbose=False,ffmpeg_params=['-y'],progress_bar=False)
+
+    return len(obs), np.sum(rs)
 
 def eval_(
     args,
@@ -409,8 +456,8 @@ def eval_(
     nec = NEC(num_ac,model_args.p,model_args.embed_size,1e-5,0.,0.,dnd_params={
         'maxlen': model_args.memory_len,
         'seed': model_args.seed,
-        'cores': 4, #model_args.cores, # #cores for KD-Tree
-        'trees': 1, #model_args.trees, # #trees for KD-Tree
+        'cores': model_args.cores, # #cores for KD-Tree
+        'trees': model_args.trees, # #trees for KD-Tree
     })
 
     sess = tf.InteractiveSession()
@@ -419,23 +466,8 @@ def eval_(
     nec.restore(os.path.join(log_dir,model_file))
 
     while(True):
-        obs, rs, done = [env.reset()], [], False
-        while not done:
-            ac,_ = nec.policy(obs[-1])
-            ob, r, done, _ = env.step(ac)
-
-            obs.append(ob)
-            rs.append(r)
-
-        print(f'ep_len: {len(obs)} acc_r: {np.sum(rs)}')
-
-        frames = np.stack([np.array(ob)[:,:,0] for ob in obs],axis=0)
-        frames = [(f * 255.).astype(np.uint8) for f in frames] # convert to uint8
-        frames = [np.tile(f[:,:,None], (1, 1, 3)) for f in frames] # convert to 3-channel image
-
-        import moviepy.editor as mpy
-        clip = mpy.ImageSequenceClip(frames,fps=60)
-        clip.write_videofile('test.mp4', verbose=False,ffmpeg_params=['-y'],progress_bar=False)
+        ep_len, acc_r = _run(env,nec,'test.mp4')
+        print(f'ep_len: {ep_len} acc_r: {acc_r}')
 
         input()
 
@@ -458,12 +490,17 @@ if __name__ == "__main__":
     # Training
     parser.add_argument('--init_eps',type=int,default=10,help='# episodes with random policy for initialize memory and replay buffer')
     parser.add_argument('--N',type=int,default=100,help='N-step-bootstrapping')
-    parser.add_argument('--update_period',type=int,default=8)
+    parser.add_argument('--update_period',type=int,default=8,help='in steps')
     parser.add_argument('--batch_size',type=int,default=32)
     parser.add_argument('--cores',type=int,default=4)
     parser.add_argument('--trees',type=int,default=1)
     parser.add_argument('--lr',type=float,default=1e-5,help='learning rate for embdedding network and embedding in the table')
     parser.add_argument('--q_lr',type=float,default=0.01,help='learning rate for Q value in the table')
+    parser.add_argument('--epsilon',type=float,default=1.0)
+    parser.add_argument('--min_epsilon',type=float,default=0.01)
+    parser.add_argument('--epsilon_decay',type=float,default=0.99)
+    parser.add_argument('--eval_period',type=int,default=10,help='in episode')
+    parser.add_argument('--save_period',type=int,default=1000000//4,help='in steps') # save every 1M frames
     # eval
     parser.add_argument('--model_file',default='model.ckpt')
 
