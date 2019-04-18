@@ -394,17 +394,17 @@ if __name__ == "__main__":
     # network
     parser.add_argument('--embed_size',type=int,default=64)
     parser.add_argument('--memory_len',type=int,default=int(5*1e5))
-    parser.add_argument('--replay_buffer_len',type=int,default=int(1e5))
+    parser.add_argument('--replay_buffer_len',type=int,default=int(0.3*1e5))
     parser.add_argument('--p',type=int,default=50)
     parser.add_argument('--delta',type=float,default=1e-5)
     # Training
     parser.add_argument('--init_eps',type=int,default=10,help='# episodes with random policy for initialize memory and replay buffer')
     parser.add_argument('--N',type=int,default=100,help='N-step-bootstrapping')
-    parser.add_argument('--update_period',type=int,default=16)
+    parser.add_argument('--update_period',type=int,default=8)
     parser.add_argument('--batch_size',type=int,default=32)
     parser.add_argument('--cores',type=int,default=4)
     parser.add_argument('--trees',type=int,default=1)
-    parser.add_argument('--lr',type=float,default=1e-4,help='learning rate for embdedding network and embedding in the table')
+    parser.add_argument('--lr',type=float,default=1e-5,help='learning rate for embdedding network and embedding in the table')
     parser.add_argument('--q_lr',type=float,default=0.01,help='learning rate for Q value in the table')
 
 
