@@ -107,6 +107,7 @@ class NEC(object):
 
             Q.restore(os.path.join(model_dir,memory_name))
 
+
     # NEC Impl
     def _embed(self,b_s,max_batch_size=1024):
         sess = tf.get_default_session()
@@ -138,7 +139,7 @@ class NEC(object):
     def append(self,e,a,q):
         sess = tf.get_default_session()
 
-        self.Qa[a].add(e[None],[(e,q)])
+        self.Qa[a].add(e[None],[q])
 
     def update(self,b_s,b_a,b_q):
         sess = tf.get_default_session()
@@ -193,7 +194,7 @@ class NEC(object):
             _, unique_idxes = np.unique(oids,return_index=True)
             Q.update(oids[unique_idxes],
                      new_nn_es[unique_idxes],
-                     list(zip(new_nn_es[unique_idxes],new_nn_qs[unique_idxes])))
+                     new_nn_qs[unique_idxes])
 
         # Update the embedding network
         #before_q, loss, _ = sess.run([self.q,self.loss,self.update_op],feed_dict={
@@ -382,12 +383,69 @@ def train(
     except KeyboardInterrupt:
         nec.save(log_dir)
 
+def eval_(
+    args,
+    log_dir,
+    env_id,
+    seed,
+    model_file,
+    **kwargs) :
+    with open(str(Path(log_dir)/'args.txt')) as f:
+        from argparse import Namespace
+        model_args = eval(f.read())
+
+    np.random.seed(seed)
+    tf.random.set_random_seed(seed)
+
+    # Env
+    env = wrap_deepmind(make_atari(env_id), # Noop randomization/skip frame of 4 is applied.
+                        episode_life=False,
+                        clip_rewards=False,
+                        frame_stack=True,
+                        scale=False)
+    num_ac = env.action_space.n
+
+    # Neural Episodic Controller
+    nec = NEC(num_ac,model_args.p,model_args.embed_size,1e-5,0.,0.,dnd_params={
+        'maxlen': model_args.memory_len,
+        'seed': model_args.seed,
+        'cores': 4, #model_args.cores, # #cores for KD-Tree
+        'trees': 1, #model_args.trees, # #trees for KD-Tree
+    })
+
+    sess = tf.InteractiveSession()
+    sess.run(tf.global_variables_initializer())
+
+    nec.restore(os.path.join(log_dir,model_file))
+
+    while(True):
+        obs, rs, done = [env.reset()], [], False
+        while not done:
+            ac,_ = nec.policy(obs[-1])
+            ob, r, done, _ = env.step(ac)
+
+            obs.append(ob)
+            rs.append(r)
+
+        print(f'ep_len: {len(obs)} acc_r: {np.sum(rs)}')
+
+        frames = np.stack([np.array(ob)[:,:,0] for ob in obs],axis=0)
+        frames = [(f * 255.).astype(np.uint8) for f in frames] # convert to uint8
+        frames = [np.tile(f[:,:,None], (1, 1, 3)) for f in frames] # convert to 3-channel image
+
+        import moviepy.editor as mpy
+        clip = mpy.ImageSequenceClip(frames,fps=60)
+        clip.write_videofile('test.mp4', verbose=False,ffmpeg_params=['-y'],progress_bar=False)
+
+        input()
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=None)
     # expr setting
     parser.add_argument('--log_dir',required=True)
     parser.add_argument('--seed',type=int,default=0)
-    parser.add_argument('--mode',default='train',choices=['train'])
+    parser.add_argument('--mode',default='train',choices=['train','eval'])
     # Env
     parser.add_argument('--env_id', default='PongNoFrameskip-v4', help='Select the domain name; eg) cartpole')
     parser.add_argument('--gamma',type=float,default=0.99)
@@ -406,10 +464,13 @@ if __name__ == "__main__":
     parser.add_argument('--trees',type=int,default=1)
     parser.add_argument('--lr',type=float,default=1e-5,help='learning rate for embdedding network and embedding in the table')
     parser.add_argument('--q_lr',type=float,default=0.01,help='learning rate for Q value in the table')
-
+    # eval
+    parser.add_argument('--model_file',default='model.ckpt')
 
     args = parser.parse_args()
     if args.mode == 'train':
         train(args=args,**vars(args))
+    elif args.mode == 'eval':
+        eval_(args=args,**vars(args))
 
 
