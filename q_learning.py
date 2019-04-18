@@ -350,7 +350,7 @@ def train(
                 if t >= N:
                     # N-Step Bootstrapping
                     # TODO: implement the efficient version
-                    R = np.sum(_gw * rewards[t-N:t]) + gamma**N*Vs[t] #R_{t-N}
+                    R = np.sum(_gw * rewards[t-N:t]) + (gamma**N)*Vs[t] #R_{t-N}
 
                     # append to memory
                     nec.append(es[t-N], acs[t-N], R)

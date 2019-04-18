@@ -108,6 +108,7 @@ class FastDictionary(object):
         Len = np.count_nonzero(Dists>=0.,axis=1)
 
         assert np.sum(Len) == C, f'{np.sum(Len)} != {C}'
+        assert C > 0, 'Nothing returned...'
 
         for b,oids in enumerate(Oids):
             for k,oid in enumerate(oids[:Len[b]]): #drop if not enough NN retrieved.
