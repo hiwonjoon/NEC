@@ -85,7 +85,7 @@ One of the feature that is not implemented is replacing a memory when it find a 
 
 ## What is the big deal here?
 
-IMHO, the coolest part of NEC is its straightforwardness; it does not requrie reward scaling scheme (most of the other RL altorithms clip reward -1 to 1 in order to stabilize value function learning), and it does not contain hyperparameters which does not physically grounded to some meaning (such as kl-target in TRPO). It is basically cool continous extension of classical Tabular Q-learning.
+IMHO, the coolest part of NEC is its straightforwardness; it does not requrie reward scaling scheme (most of the other RL altorithms clip reward -1 to 1 in order to stabilize value function learning), and it does not contain hyperparameters which does not physically grounded to something. It is basically cool continous extension of classical Tabular Q-learning.
 
 Enjoy! :beer:
 
