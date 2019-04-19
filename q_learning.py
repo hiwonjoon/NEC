@@ -492,7 +492,7 @@ if __name__ == "__main__":
     parser.add_argument('--N',type=int,default=100,help='N-step-bootstrapping')
     parser.add_argument('--update_period',type=int,default=8,help='in steps')
     parser.add_argument('--batch_size',type=int,default=32)
-    parser.add_argument('--cores',type=int,default=4)
+    parser.add_argument('--cores',type=int,default=4,help='#cores PYFLANN will use')
     parser.add_argument('--trees',type=int,default=1)
     parser.add_argument('--lr',type=float,default=1e-5,help='learning rate for embdedding network and embedding in the table')
     parser.add_argument('--q_lr',type=float,default=0.01,help='learning rate for Q value in the table')
