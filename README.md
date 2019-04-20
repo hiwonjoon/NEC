@@ -77,15 +77,47 @@ One of the feature that is not implemented is replacing a memory when it find a 
 
 ![breakout_after_5M_frames](assets/breakout_policy_after_5M_frames.gif)
 
-  - Average Episode Reward: `27.5` (vs `13.6 @ 10 million frames` from the original NEC paper)
+  - Average Episode Reward: `27.5 @ 5M`, `133.5 @ 10M` (vs `13.6 @ 10 million frames` from the original NEC paper)
 
   - Training Statistics
 
 ![pong_training](assets/breakout.png)
 
+- Hero
+
+  - Trained policy after 5 million frames of training
+
+![hero_after_5M_frames](assets/hero_policy_after_5M_frames.gif)
+
+  - Average Episode Reward: `13395 @ 5M` and saturated. (vs `about 13000 @ 5M`, `16265.3 @ 10M`)
+
+- MsPacman
+
+  - Trained policy after 5 million frames of training
+
+![MsPacman_after_5M_frames](assets/mspacman_policy_after_5M_frames.gif)
+
+  - Average Episode Reward: `1800 @ 5M`, `2118 @ 10M` (vs `about 2800 @ 5M`, `4142.8 @ 10M`)
+
+- Alien
+
+  - Trained policy after 5 million frames of training
+
+![Alien_after_5M_frames](assets/alien_policy_after_5M_frames.gif)
+
+  - Average Episode Reward: `490 @ 5M` and `800 @ 10M` (vs `about 2200 @ 5M`, `3460.6 @ 10M`)
+
+- Frostbite
+
+  - Trained policy after 5 million frames of training
+
+![Frostbite_after_5M_frames](assets/frostbite_policy_after_5M_frames.gif)
+
+  - Average Episode Reward: `260 @ 5M` and saturated. (vs `about 1500 @ 5M`, `2747.4 @ 10M`)
+
 ## What is the big deal here?
 
-IMHO, the coolest part of NEC is its straightforwardness; it does not requrie reward scaling scheme (most of the other RL altorithms clip reward -1 to 1 in order to stabilize value function learning), and it does not contain hyperparameters which does not physically grounded to something. It is basically cool continous extension of classical Tabular Q-learning.
+IMHO, the coolest part of NEC is its straightforwardness; for example, it does not requrie reward scaling scheme (most of the other RL altorithms clip reward -1 to 1 in order to stabilize value function learning). It is basically cool continous extension of classical Tabular Q-learning with deep learning.
 
 Enjoy! :beer:
 
